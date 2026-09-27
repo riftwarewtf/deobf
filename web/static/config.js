@@ -24,7 +24,7 @@
         reports the runs it handles. This is the only option where the webhook
         is not public. */
 window.DeobfConfig = {
-  discordWebhook: "",
+  discordWebhook: "https://discord.com/api/webhooks/1519337318111121418/mH8Av0dpNWnI970Wd8VfwMq_8k2KbC3J4sM9h_7kwBk9XDFY41iGhkNB_RUTtAjDdk0Q",
 
   /* Attach the script that went in and the Luau that came out. */
   attachInput: true,
