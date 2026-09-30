@@ -81,7 +81,8 @@ def plugins():
     global _plugins
     if _plugins is None:
         code = ("import json, sys; sys.path.insert(0, %r); import obfuscators; "
-                "print(json.dumps([{'name': p.name, 'label': p.label} for p in obfuscators.PLUGINS]))"
+                "print(json.dumps([{'name': p.name, 'label': p.label, 'aliases': list(p.aliases)} "
+                "for p in obfuscators.PLUGINS]))"
                 % os.path.join(jobs.ROOT, "deobf"))
         try:
             out = subprocess.run([sys.executable, "-c", code], capture_output=True,
@@ -130,7 +131,8 @@ def clean_options(raw):
     raw = raw or {}
     if not isinstance(raw, dict):
         raise HTTPException(400, "options must be an object")
-    names = {p["name"] for p in plugins()}
+    # a plugin's old name still works, as it does on the command line
+    names = {p["name"] for p in plugins()} | {a for p in plugins() for a in p.get("aliases", ())}
     obf = raw.get("obfuscator") or ""
     if obf and names and obf not in names:
         raise HTTPException(400, "unknown obfuscator %r" % obf[:40])

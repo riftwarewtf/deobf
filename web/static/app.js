@@ -140,6 +140,9 @@
       $("detected-label").textContent = d.label;
       $("detected-conf").textContent =
         (d.confidence === null || d.confidence === undefined) ? "forced" : Number(d.confidence).toFixed(2);
+      var note = detectNote(d);
+      $("detected-note").textContent = note;
+      show($("detected-note"), !!note);
       show($("detected"), true);
     }).catch(function (e) {
       /* detection is optional - the run detects again - but a failure here
@@ -149,6 +152,18 @@
       setStatus("down", "engine error");
       fail($("submit-error"), "The deobfuscator could not start: " + e.message);
     });
+  }
+
+  /* What the page can say about an input beyond its name: which Luraph VM it
+     is decides whether it gets lifted or only traced, and saying so up front
+     beats a trace that looks like a failure. Read from the source, which the
+     page has either way, so it works with the server engine too. */
+  function detectNote(d) {
+    if (d.obfuscator !== "luraph" || !window.DeobfDetect.luraph) return "";
+    var f = window.DeobfDetect.luraph(state.source);
+    if (f.family === "legacy") return "legacy Lua 5.1 VM: behaviour trace only";
+    if (f.version && f.version[0] > 15) return "newer than this build: lifting is attempted anyway";
+    return "";
   }
 
   /* -------------------------------------------------------------- options */

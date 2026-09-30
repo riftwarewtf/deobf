@@ -15,6 +15,7 @@ import sys
 import time
 
 import harness
+from obfuscators.luraph_v15 import versions
 import traceout as trace
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -164,8 +165,20 @@ def run(job):
     args = job.args
     devirt_on = not args.no_devirt
     source = job.source
+    # Up to v13 the VM is a Lua 5.1 interpreter with its bytecode in an
+    # "LPH|..." literal (versions.py). devirt.py lifts the modern register VM
+    # and nothing else, and its hooks are keyed to that VM's closure maker, so
+    # on a legacy file both would only cost a run to find nothing.
+    flavour = versions.classify(source)
+    hooks = not args.no_hooks
+    if flavour.family == "legacy":
+        if devirt_on:
+            print("[*] %s: the legacy Lua 5.1 VM has no lifter yet - tracing only" % flavour.label,
+                  file=sys.stderr)
+            devirt_on = False
+        hooks = False
     try:
-        patched = source if args.no_hooks else patch_entries(source, job.source_path)
+        patched = patch_entries(source, job.source_path) if hooks else source
     except SyntaxError as e:
         sys.exit("[!] the input is %s: the file is damaged (truncated, or mangled by a paste/upload); "
                  "nothing to run" % e)
@@ -218,7 +231,7 @@ def run(job):
         found, body = harness.take_chunks(body)
         added = 0
         for key, src in found:
-            if key not in chunks and args.no_hooks:
+            if key not in chunks and not hooks:
                 chunks[key] = src
             elif key not in chunks:
                 raw_chunks[key] = src
@@ -267,7 +280,7 @@ def run(job):
     body, strings = trace.take_strings(body)
 
     notes = ["anti-tamper trap functions disabled: %s" % ", ".join("#%d" % p for p in skip)] if skip else []
-    text = trace.header(job.input, notes) + body
+    text = trace.header(job.input, notes, job.obfuscator) + body
 
     def write_trace():
         job.write(job.trace_path, trace.render(text, args))

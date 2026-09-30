@@ -1,15 +1,20 @@
-# Luraph v15 (`deobf/obfuscators/luraph_v15/`)
+# Luraph (`deobf/obfuscators/luraph_v15/`, plugin name `luraph`)
 
-> Obfuscator notes for the Luraph v15 plugin. Same rules as CLAUDE.md: a
+> Obfuscator notes for the Luraph plugin. Same rules as CLAUDE.md: a
 > reference, not a changelog; **hard limit 500 lines**.
 
 The plugin devirtualizes: the VM bytecode is lifted back to real Luau with
 control flow, locals, closures and untaken branches. When lifting fails (or
 with `--no-devirt`) the result is the behaviour trace.
 
-- `__init__.py`: `LuraphV15` (detect: the `Luraph Obfuscator v15` header,
-  else the `return setmetatable({[n]=bit32.x,...` VM-object shape = 0.8;
+The plugin's name is `luraph`; `--obfuscator luraph_v15` still works
+(`Obfuscator.aliases`, so the old name in scripts and `research/devirt_check.py`
+keeps working). The folder keeps its old name to leave every
+`obfuscators.luraph_v15.*` import alone.
+
+- `__init__.py`: `LuraphV15` (`detect`/`describe` both from `versions.py`;
   options `--no-hooks`, `--max-runs`, `--devirt-rounds`).
+- `versions.py`: which generation an input is - see **Versions** below.
 - `driver.py`: pipeline (`patch_entries`, trap/chunk reruns, `devirtualize`
   constant rounds, long-lived harness).
 - `devirt.py` (front end: VMModel, ProtoLifter, Stepper, `Program._walk`,
@@ -27,6 +32,59 @@ With sources (ground truth for devirt readability).
 | Sample | Trace | Devirtualized |
 |---|---|---|
 | `001_vm_like_dispatch-obfuscated.lua` (`001_vm_like_dispatch.lua`, options unknown) | Only Luraph's probes: the script is pure math + `assert`. | Stack machine (program table, PUSH/ADD/SUB/MUL handlers, `assert(sp==1 and stack[1]==34)`, returns 34). 5 functions, fully lifted, same structure as the source; only names differ (`tbl`/`tbl2`/`n` for program/stack/sp). Dispatch goes through VM-object methods (`K:A(...)`) and handlers load script globals directly (`R[a] = assert`, what Hardcode Globals describes). devirt_check can't compare it (no traced effects); run the lifted file instead (prints 34). |
+
+## Versions
+
+Luraph puts its own version in the first line of everything it makes:
+`-- This file was protected using Luraph Obfuscator v14.4.2 [https://lura.ph/]`.
+That comment is a certain fingerprint, so `versions.py` answers 1.0 for any
+version, and `describe()` puts the version into the result's
+"Detected obfuscation" line and onto the web page. What the version does *not*
+settle is whether the file can be lifted, which is why `Flavour` keeps the
+version and the VM family apart.
+
+**Two VM generations.** A GitHub code search for the header comment (Sep 2026)
+found v14.3, v14.4.1, v14.4.2, v14.5.2 and v14.7 in the thousands and no v11 at
+all, so v14 is what turns up in practice and v15 is the newest:
+
+- **modern (v14, v15, newer)** - the register VM this plugin lifts. Shape:
+  the file *is* one `return setmetatable({...}, ...)` with library functions in
+  numeric slots (`[104]=string.char`). `looks_modern` checks that past the
+  version comment (`code_head` drops leading blank and `--` lines).
+- **legacy (up to v13)** - a Lua 5.1 interpreter, a completely different
+  machine. Shape: the bytecode is one string literal `"LPH|<hex>"`, where the
+  letter `G` is a run-length marker (a pair `<n>G` means "repeat the next byte
+  n times"); the VM preamble is ten local functions in a fixed order (vm_run,
+  get_byte, get_dword, get_bits, get_float64, get_instruction, get_string,
+  decode_chunk, create_wrapper, vm_run_func) and instruction fields come out of
+  `get_bits` at widths 6/8/9/18, i.e. Lua 5.1's layout. `devirt.py` fits none of
+  it, so `driver.run` turns lifting **and** the entry hooks off for these and
+  goes straight to the trace, rather than spending a run to find nothing.
+
+**The shape wins over the version.** When a file's VM is recognizable, that
+decides the family; the version only decides when the file has been rewrapped
+past recognition (`>= DEVIRT_FROM` = 14 counts as modern). The version is still
+reported either way.
+
+**Where the legacy facts come from.** `PhoenixZeng/LuraphDeobfuscator` (Java,
+v11.5-v11.8.1) is a *static* deobfuscator: it parses the script, pattern-matches
+each opcode handler's AST (`identifyMove`, `identifyLoadk`, ... in
+`LuraphDevirtualizer.java`), symbolically executes `decode_chunk` to read the
+byte stream, and writes a Lua 5.1 `.luac` for unluac to decompile. The byte
+layout is **not** a fixed format - `loadChunks` derives the read order from that
+script's own AST - so there is nothing to hardcode, and porting it means porting
+the AST symbolic executor with it. This pipeline is dynamic, so the cheaper
+route to legacy support is the one `devirt.py` already takes: instrument
+`decode_chunk`/`create_wrapper`, let the script decode its own chunk, and lift
+the captured Lua 5.1 bytecode through `ir.py` + `backend.lower`. **Both halves
+need a legacy sample to build against; there is none in `samples/`.**
+
+**To support a new generation:** get a sample, run `deob.py <it> --detect`
+(it should already name the version), then try a plain run. If lifting fails,
+`--debug` gives `*.protos.json` and `vmmap.py` is where the VM's closure maker
+is recognized. Keep `versions.py` and `web/static/detect.js` in step - they are
+two implementations of the same decision, and
+`web/README.md` says how to diff them.
 
 ## Usage notes
 

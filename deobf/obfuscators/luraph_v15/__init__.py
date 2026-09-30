@@ -1,33 +1,33 @@
-"""Luraph v15 plugin: devirtualizer + behaviour trace (notes: LURAPH.md)."""
+"""Luraph plugin: devirtualizer + behaviour trace (notes: LURAPH.md).
+
+Every Luraph generation lands here. `versions.py` says which one an input is
+and whether lifting is worth a run; the version goes into the result's
+"Detected obfuscation" line and onto the web page.
+"""
 import re
 import sys
 
 from obfuscators.base import Obfuscator
+from obfuscators.luraph_v15 import versions
 
-HEADER = re.compile(r"This file was protected using Luraph Obfuscator v(\d+)(?:\.(\d+))?")
 HEADER_LINE = re.compile(r"\s*--[ \t]*This file was protected using Luraph Obfuscator v[\d.]+[ \t]*"
                          r"\[https?://lura\.ph/?\]")
 
 
 class LuraphV15(Obfuscator):
-    name = "luraph_v15"
-    label = "Luraph v15"
+    name = "luraph"
+    aliases = ("luraph_v15",)       # what this plugin used to be called
+    label = "Luraph"
     doc = "LURAPH.md"
 
     def detect(self, source):
-        m = HEADER.search(source[:500])
-        if m:
-            return 1.0 if m.group(1) == "15" else 0.3     # other versions: probably close, not verified
-        # header stripped: v15's shape is `return setmetatable({...VM object...}, ...)`
-        # with numeric-keyed library slots (`[75]=bit32.rrotate`) and `LPH` markers
-        head = source.lstrip()[:2000]
-        if head.startswith("return setmetatable({") and (
-                re.search(r"\[\d+\]=(bit32|buffer|string|table|math)\.\w+", head) or "LPH" in source[:200000]):
-            return 0.8
-        return 0.0
+        return versions.classify(source).confidence
+
+    def describe(self, source):
+        return versions.classify(source).label
 
     def add_arguments(self, ap):
-        g = ap.add_argument_group("Luraph v15")
+        g = ap.add_argument_group("Luraph")
         g.add_argument("--no-hooks", action="store_true",
                        help="do not instrument VM functions (no anti-tamper trap attribution, no lifting)")
         g.add_argument("--max-runs", type=int, default=12, help="maximum number of trace runs (trap reruns)")

@@ -36,7 +36,8 @@ class Generic(Obfuscator):
         _, body = harness.take_chunks(body)
         body, strings = trace.take_strings(body)
         # generic scripts have no Luraph probes to strip at the top
-        text = trace.render(trace.header(job.input) + body, args, preamble=False)
+        text = trace.render(trace.header(job.input, obfuscator=job.obfuscator) + body,
+                            args, preamble=False)
         job.write(job.trace_path, text)
         if strings is not None:
             job.write(job.path(".strings.txt"), strings)

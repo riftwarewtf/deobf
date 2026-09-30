@@ -22,7 +22,7 @@ MIN_CONFIDENCE = 0.5    # below this the input counts as unrecognized (the fallb
 
 def by_name(name):
     for p in PLUGINS:
-        if p.name == name:
+        if name == p.name or name in p.aliases:
             return p
     raise KeyError("unknown obfuscator %r (known: %s)" % (name, ", ".join(p.name for p in PLUGINS)))
 

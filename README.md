@@ -13,9 +13,16 @@ This repository is the pipeline plus a web front end for it.
 
 | Obfuscator | Detection | Output |
 |---|---|---|
-| Luraph v15 | automatic | devirtualized Luau (falls back to a trace) |
+| Luraph v14, v15 and newer | automatic, with the version | devirtualized Luau (falls back to a trace) |
+| Luraph up to v13 (the legacy Lua 5.1 VM) | automatic, with the version | behaviour trace, rendered as Luau |
 | IronBrew 1 | automatic | devirtualized Luau (falls back to a trace) |
 | anything else | fallback | behaviour trace, rendered as Luau |
+
+Luraph writes its version into a comment at the top of every script it makes,
+and the page reports it (`Luraph v14.4.2`). Up to v13 the VM is a different
+machine - a Lua 5.1 interpreter with its bytecode in an `LPH|...` literal - and
+there is no lifter for it yet, so those get the trace and the page says so
+instead of letting a run find out.
 
 ---
 

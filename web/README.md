@@ -9,11 +9,26 @@ pip install -r web/requirements.txt
 python web/server.py                        # http://127.0.0.1:8000
 uvicorn web.server:app --port 8000          # same, with uvicorn's own flags
 python web/smoke.py                         # end-to-end check against samples/
+python web/detect_check.py                  # the page's detector vs the pipeline's
 ```
 
 The server needs `deobf/bin/luau` and `deobf/bin/luau-ast`
 (`python deobf/build_luau.py --portable`). `/api/health` reports `luau: false`
 until they exist, and the page says so instead of failing per job.
+
+## Naming the obfuscator twice
+
+`static/detect.js` is a JavaScript copy of the plugins' `detect()` (and, for
+Luraph, of `obfuscators/luraph_v15/versions.py`), so that pasting a script can
+label it without starting Pyodide and the Luau runtime - about 16 MB, which on
+a phone is most of what the tab is allowed. The run detects again in Python,
+and that is the one that decides which plugin executes.
+
+Two implementations of one decision drift silently: the page keeps labelling
+scripts, just wrongly. `python web/detect_check.py` runs both over the samples,
+every Luraph version seen in the wild and the near misses (a header quoted in
+code, an `LPH|` string too short to be a payload) and diffs the answers. Run it
+after touching either side. It needs node.
 
 ## How a job runs
 

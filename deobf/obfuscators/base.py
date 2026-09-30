@@ -15,7 +15,8 @@ import sys
 
 class Obfuscator:
     name = ""           # CLI name (--obfuscator NAME), also the package name
-    label = ""          # human-readable, e.g. "Luraph v15"
+    aliases = ()        # names this plugin also answers to (e.g. one it outgrew)
+    label = ""          # human-readable, e.g. "Luraph"
     doc = ""            # the plugin's notes file in the Decompiler folder (e.g. LURAPH.md)
 
     def detect(self, source):
@@ -23,6 +24,13 @@ class Obfuscator:
         obfuscator. Cheap: header comments, signature strings, VM shape
         regexes. 0 = no. The generic fallback answers 0.01."""
         return 0.0
+
+    def describe(self, source):
+        """`label`, refined for this input - e.g. the version the file says it
+        is ("Luraph v14.4.2"). Shown in the result's "Detected obfuscation"
+        line, by --detect and on the web page, so a plugin covering several
+        versions can say which one it found. Must not run the pipeline."""
+        return self.label
 
     def add_arguments(self, parser):
         """Plugin-specific command line options (an argparse group)."""
@@ -41,7 +49,7 @@ class Job:
     trace_path where the trace goes (<work dir>/<name>.deobf.luau; with --debug
                in output/); other intermediate files use the same base name
     debug      --debug: intermediate files stay in output/ and are announced
-    obfuscator the plugin's label, e.g. "Luraph v15" (credit_header)
+    obfuscator what the plugin calls this input, e.g. "Luraph v14.4.2" (credit_header)
     """
 
     def __init__(self, input_path, source, args, trace_path, debug, obfuscator=""):

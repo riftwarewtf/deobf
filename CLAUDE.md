@@ -30,7 +30,7 @@ there, never here; this file only holds what all plugins share.
 
 | Plugin (`--obfuscator`) | Notes | Status |
 |---|---|---|
-| `luraph_v15` | `LURAPH.md` | Devirtualizer + trace |
+| `luraph` (was `luraph_v15`, still accepted) | `LURAPH.md` | v14/v15+: devirtualizer + trace. Up to v13 (legacy Lua 5.1 VM): trace only. |
 | `ironbrew1` | `IRONBREW1.md` | Devirtualizer + trace. Samples: `*-ib1.lua` (all with sources). |
 | `generic` | (none) | Fallback for undetected inputs: behaviour trace only. |
 
@@ -61,7 +61,8 @@ sit in the plugin's folder (Luraph's `options.txt`).
   submit, SSE progress, result), `jobs.py` (bounded thread pool; **one
   `deob.py` subprocess per job**, never an import - see Usage), `smoke.py`
   (runs every sample through the API and diffs `samples/output/`),
-  `static/` (plain HTML/JS, no build step, also servable from GitHub Pages).
+  `detect_check.py` (`static/detect.js` is a JS copy of the plugins' `detect()`:
+  both must agree), `static/` (plain HTML/JS, no build step, also from Pages).
   `Dockerfile` builds Luau in one stage and runs the server in the next.
 - `deobf/obfuscators/`: `__init__.py` (registry `PLUGINS`, `detect`),
   `base.py` (`Obfuscator`, `Job`), `generic.py`, one package per obfuscator.
@@ -415,7 +416,9 @@ hold for every change to the shared runtime:
   - `research/active_locals.py file` (must stay < 200);
   - the obfuscator's trace comparison (Luraph: `research/devirt_check.py`,
     `research/regress.py`; LURAPH.md).
-- **After a detection/registry change:** `deob.py <file> --detect` on every sample.
+- **After a detection/registry change:** `deob.py <file> --detect` on every
+  sample, and `python web/detect_check.py` (the page labels inputs with its own
+  copy of the detectors; it has to give the same answers).
 - **Last step of every deobfuscator change (mandatory):** run the plain
   `python .\deobf\deob.py samples\<file>` (no flags) on the samples that
   have a source (`001_vm_like_dispatch-obfuscated.lua`;

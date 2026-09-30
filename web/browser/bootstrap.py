@@ -132,7 +132,8 @@ def detect(source):
     """(name, confidence, label) without running anything."""
     import obfuscators
     plugin, conf = obfuscators.detect(source)
-    return {"obfuscator": plugin.name, "confidence": conf, "label": plugin.label}
+    # describe(): the version where the plugin knows one ("Luraph v14.4.2")
+    return {"obfuscator": plugin.name, "confidence": conf, "label": plugin.describe(source)}
 
 
 def deobfuscate(source, name="script.lua", options=None):
@@ -179,11 +180,12 @@ def deobfuscate(source, name="script.lua", options=None):
         plugin, conf = obfuscators.by_name(options["obfuscator"]), None
     else:
         plugin, conf = obfuscators.detect(source)
-    print("[*] obfuscator: %s%s" % (plugin.label, "" if conf is None else " (detected, %.2f)" % conf),
+    label = plugin.describe(source)
+    print("[*] obfuscator: %s%s" % (label, "" if conf is None else " (detected, %.2f)" % conf),
           file=sys.stderr)
 
     trace_path = os.path.join(workdir, os.path.basename(in_path) + ".deobf.luau")
-    job = Job(in_path, source, args, trace_path, False, plugin.label)
+    job = Job(in_path, source, args, trace_path, False, label)
     result = plugin.deobfuscate(job)
     if not result or not os.path.exists(result):
         raise RuntimeError("the pipeline produced no result")

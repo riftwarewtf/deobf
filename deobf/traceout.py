@@ -29,12 +29,16 @@ def take_strings(body):
     return body, None
 
 
-def header(input_path, notes=()):
+def header(input_path, notes=(), obfuscator=None):
+    """The trace's first lines. `obfuscator` is what the plugin called this
+    input (a version where it knows one), so a trace says which obfuscation it
+    came from just like a devirtualized result does (Job.credit_header)."""
     h = ("-- Deobfuscated by deobf (dynamic trace)\n"
-         "-- source: %s\n"
-         "-- NOTE: reconstructed from observed behaviour; branches that were not taken\n"
-         "--       during the trace are missing and conditions are only noted in comments.\n"
-         % os.path.basename(input_path))
+         "-- source: %s\n" % os.path.basename(input_path))
+    if obfuscator:
+        h += "-- Detected obfuscation: %s\n" % obfuscator
+    h += ("-- NOTE: reconstructed from observed behaviour; branches that were not taken\n"
+          "--       during the trace are missing and conditions are only noted in comments.\n")
     return h + "".join("-- %s\n" % n for n in notes)
 
 

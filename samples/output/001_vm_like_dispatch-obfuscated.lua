@@ -1,5 +1,5 @@
 -- Deobfuscated by ccjvwsod on Discord
--- Detected obfuscation: Luraph v15
+-- Detected obfuscation: Luraph v15.0
 -- Local names are inferred from use (the original names are not in the bytecode)
 
 local tbl = { { "PUSH", 7 }, { "PUSH", 6 }, { "MUL" }, { "PUSH", 10 }, { "SUB" }, { "PUSH", 2 }, { "ADD" } }

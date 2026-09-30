@@ -122,11 +122,13 @@ def main():
             sys.exit("[!] %s" % e.args[0])
     else:
         plugin, conf = obfuscators.detect(source)
+    # what the plugin calls this particular file (a version, where it knows one)
+    label = plugin.describe(source)
     if args.detect:
-        print("%s\t%s\t%s" % (plugin.name, "forced" if conf is None else "%.2f" % conf, plugin.label))
+        print("%s\t%s\t%s" % (plugin.name, "forced" if conf is None else "%.2f" % conf, label))
         return
     maybe_reexec_pypy(args)
-    print("[*] obfuscator: %s%s" % (plugin.label, "" if conf is None else " (detected, %.2f)" % conf),
+    print("[*] obfuscator: %s%s" % (label, "" if conf is None else " (detected, %.2f)" % conf),
           file=sys.stderr)
 
     outdir = os.path.join(os.path.dirname(os.path.abspath(args.input)), "output")
@@ -145,7 +147,7 @@ def main():
         final = args.output or os.path.join(outdir, os.path.basename(args.input))
     os.makedirs(os.path.dirname(os.path.abspath(final or trace_path)), exist_ok=True)
     try:
-        result = plugin.deobfuscate(Job(args.input, source, args, trace_path, args.debug, plugin.label))
+        result = plugin.deobfuscate(Job(args.input, source, args, trace_path, args.debug, label))
         if final:
             if not result or not os.path.exists(result):
                 sys.exit("[!] no result")
