@@ -12,7 +12,7 @@ LOCAL = re.compile(r"^[a-z]\d+(_\d+)?$|^[A-Z]\w*_\d+$|^(inf|nan)$")
 
 
 def check(path):
-    out = subprocess.run([os.path.join(HERE, "bin", "luau-ast.exe"), path], capture_output=True).stdout
+    out = subprocess.run([os.path.join(HERE, "bin", "luau-ast.exe" if os.name == "nt" else "luau-ast"), path], capture_output=True).stdout
     root = json.loads(out.decode("latin-1"))["root"]
     found = {}
     stack = [root]

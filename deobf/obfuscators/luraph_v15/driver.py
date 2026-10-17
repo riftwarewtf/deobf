@@ -26,9 +26,13 @@ SPIN_CHECKS = 24    # watchdog checks (2^20 VM steps each) without environment a
 def patch_spin(src):
     """Spin watchdog (envlog's --cfg spin): every VM dispatch loop head counts
     steps in __SPIN.n and calls __SPIN.f() every __SPIN.step of them. Table
-    operations only, plus that rare call (no locals: see patch_entries)."""
-    return re.sub(r"while true do (?:local )?[A-Za-z_]+(?:,[A-Za-z_]+)*=[A-Za-z_]+\[[A-Za-z_]+\];",
-                  lambda m: m.group(0) + "__SPIN.n=__SPIN.n+1;if __SPIN.n>=__SPIN.step then __SPIN.f()end;", src)
+    operations only, plus that rare call (no locals: see patch_entries).
+    The head forms are vmmap.DISPATCH_HEAD (a head this misses leaves a whole
+    dispatch mode without a watchdog)."""
+    from obfuscators.luraph_v15 import vmmap
+    code = "__SPIN.n=__SPIN.n+1;if __SPIN.n>=__SPIN.step then __SPIN.f()end;"
+    return re.sub(vmmap.DISPATCH_HEAD,
+                  lambda m: m.group(0) + ("" if m.group(0).endswith(";") else ";") + code, src)
 
 
 def patch_chunk(src, tmpdir):
@@ -43,6 +47,49 @@ def patch_chunk(src, tmpdir):
         return src
     finally:
         os.remove(path)
+
+
+MAX_CAPTURED_PROTOS = 8192
+
+
+def _curried_capture(c3, tag, l2, c2):
+    """Capture hooks for a curried closure maker (v15.1): `function(A,H,...)
+    ... return function(K,K) ... return function(...) <dispatch> end end end`.
+
+    There is no proto parameter and no statement that stores the closure, so
+    the outermost function's own parameters *are* the proto's data: the hook
+    collects them into one table per invocation (`__pv`) and that table is
+    the proto key everything else uses (closure_entries returns `__pv` for
+    these). `__PF`/`__PK` are then set where the inner closures are handed
+    out: on the two `return` statements when they are named, else by wrapping
+    the returned function expressions.
+
+    This is the one hook that declares a local. It runs once per proto, not
+    per VM step, so it does not change the frame of the interpreter closure
+    whose depth Luraph's stack probe measures.
+    """
+    from obfuscators.luraph_v15 import vmmap
+    f3, f2, f1 = c3["f3"], c3["f2"], c3.get("f1")
+    l0, c0, _, _ = vmmap.loc(f3["body"]["body"][0])
+    # repeated parameter names shadow each other: only the last is visible
+    params = list(dict.fromkeys(a["name"] for a in (f3.get("args") or []) if a.get("name")))
+    fields = ",".join("%s=%s" % (nm, nm) for nm in params)
+    out = [(l0, c0, "local __pv={%s};if __PA and __PA.n<%d then __PA.n=__PA.n+1;"
+                    "__PA[__pv]={__seq=__PA.n,__maker=\"%s@%d,%d\",%s} end;"
+                    % (fields, MAX_CAPTURED_PROTOS, tag, l2, c2, fields))]
+    if c3["kind"] == "named":
+        for name, stmt in ((c3["uName"], c3["retStmt"]), (c3["zName"], c3["f2Ret"])):
+            l, c, _, _ = vmmap.loc(stmt)
+            out.append((l, c, "__PF[%s]=__pv;__PK[__pv]=%s;" % (name, name)))
+    else:
+        for fn, pk in ((f2, True), (f1, False)):
+            if fn is None:
+                continue
+            fl1, fc1, fl2, fc2 = vmmap.loc(fn)
+            body = "__PF[__f]=__pv;" + ("__PK[__pv]=__f;" if pk else "")
+            out.append((fl1, fc1, "(function(__f)%sreturn __f end)(" % body))
+            out.append((fl2, fc2, ")"))
+    return out
 
 
 def patch_entries(source, path):
@@ -68,6 +115,10 @@ def patch_entries(source, path):
     tag = harness.chunk_key(source)
     for info in vmmap.maker_info(root):
         (l2, c2), var, pv = info["at"], info["var"], info["proto"]
+        c3 = info.get("curried3")
+        if c3:
+            edits += _curried_capture(c3, tag, l2, c2)
+            continue
         code = " __PF[%s]=%s " % (var, info.get("pf_key", pv))
         # devirtualizer capture: once per proto, the maker-level values the VM
         # closure uses (operand arrays, constants, helpers). Table operations
@@ -306,14 +357,22 @@ def run(job):
     runner.finish()
     trace.status_line(body)
     if devirt_on and os.path.exists(dpath):
-        # a lift full of calls to nil misread the VM: the trace is the better result
         with open(dpath, encoding="utf-8", errors="replace") as f:
             lifted = f.read()
-        nil_calls = lifted.count("(nil)(")
-        if nil_calls < 50 or nil_calls * 100 < lifted.count("\n"):
-            return dpath
-        print("[!] the devirtualized output is broken (%d calls of nil); writing the behaviour trace "
-              "instead" % nil_calls, file=sys.stderr)
+        # nothing but the lifter's own error markers (an unliftable VM root):
+        # the file would carry no script code at all
+        code = [l.strip() for l in lifted.split("\n")
+                if l.strip() and not l.lstrip().startswith("--")]
+        if not code or all(l.startswith('error("devirt:') for l in code):
+            print("[!] devirtualization lifted no code (%s); writing the behaviour trace instead"
+                  % (code[0][:80] if code else "empty output"), file=sys.stderr)
+        else:
+            # a lift full of calls to nil misread the VM: the trace is the better result
+            nil_calls = lifted.count("(nil)(")
+            if nil_calls < 50 or nil_calls * 100 < lifted.count("\n"):
+                return dpath
+            print("[!] the devirtualized output is broken (%d calls of nil); writing the behaviour "
+                  "trace instead" % nil_calls, file=sys.stderr)
         if not job.debug:
             os.remove(dpath)
         write_trace()

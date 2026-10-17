@@ -30,7 +30,7 @@ there, never here; this file only holds what all plugins share.
 
 | Plugin (`--obfuscator`) | Notes | Status |
 |---|---|---|
-| `luraph` (was `luraph_v15`, still accepted) | `LURAPH.md` | v14/v15+: devirtualizer + trace. Up to v13 (legacy Lua 5.1 VM): trace only. |
+| `luraph` (was `luraph_v15`, still accepted) | `LURAPH.md` | v14/v15: devirtualizer + trace. v15.1: trace (its payload VM is not reached yet). Up to v13 (legacy Lua 5.1 VM): trace only. |
 | `ironbrew1` | `IRONBREW1.md` | Devirtualizer + trace. Samples: `*-ib1.lua` (all with sources). |
 | `generic` | (none) | Fallback for undetected inputs: behaviour trace only. |
 

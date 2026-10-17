@@ -18,7 +18,7 @@ def check(path):
     with open(tmp, "w", encoding="utf-8", newline="\n") as f:
         f.write(prog)
     try:
-        out = subprocess.run([os.path.join(HERE, "bin", "luau.exe"), tmp], capture_output=True, timeout=120)
+        out = subprocess.run([os.path.join(HERE, "bin", "luau.exe" if os.name == "nt" else "luau"), tmp], capture_output=True, timeout=120)
     finally:
         os.remove(tmp)
     return (out.stdout + out.stderr).decode("utf-8", "replace").strip()

@@ -528,9 +528,19 @@ class VMModel:
     def upvals_index(self):
         return self.info.get("upvals_index", 2)
 
-    def maker_args(self, vmobj, proto, upvals):
+    def maker_args(self, vmobj, proto, upvals, cap=None):
         n = len(self.maker["args"])
         vals = [None] * max(n, 3)
+        if self.info.get("mode") == "dispatch_local" and cap is not None:
+            # a curried maker's own parameters are not (vmobj, proto, upvals):
+            # the proto's data sits in the enclosing function, whose values the
+            # capture holds by name (driver._curried_capture)
+            if self.info.get("chain"):
+                return [upvals] * max(n, 3)
+            for i, a in enumerate(self.maker["args"]):
+                if a["name"] in cap:
+                    vals[i] = cap[a["name"]]
+            return vals
         vals[0], vals[self.proto_index()], vals[self.upvals_index()] = vmobj, proto, upvals
         return vals
 
@@ -539,6 +549,11 @@ class VMModel:
         return p if p is not None else cap.get(self.maker["args"][self.proto_index()]["name"])
 
     def vmobj_of(self, cap):
+        chain = self.info.get("chain")
+        if chain and chain[0].get("args"):
+            v = cap.get(chain[0]["args"][0]["name"])
+            if v is not None:
+                return v
         return cap.get(self.maker["args"][0]["name"])
 
 
@@ -667,9 +682,10 @@ class ProtoLifter:
     """Steps the instructions of one proto."""
     walk_only = False   # set for request-collecting walks (no text is produced)
 
-    def __init__(self, vm, dump, vmobj, proto, upvals, globals_tab):
+    def __init__(self, vm, dump, vmobj, proto, upvals, globals_tab, cap=None):
         self.vm = vm
         self.vmobj = vmobj
+        self.cap = cap
         self.dump = dump
         self.special = vm.special
         self.globals_tab = globals_tab
@@ -700,6 +716,12 @@ class ProtoLifter:
         for v in proto.h.values():
             if isinstance(v, LTable):
                 self.proto_arrays.add(id(v))
+        if cap is not None and vm.info.get("mode") == "dispatch_local":
+            # a curried maker holds the operand arrays in the captured values
+            # rather than in the proto table
+            for k, v in cap.items():
+                if isinstance(v, LTable) and v is not vmobj and k not in ("self", "U"):
+                    self.proto_arrays.add(id(v))
         self.making = False
         if isinstance(proto, JitProto):
             # a function an LPH_JIT function defines: its environment is
@@ -710,7 +732,29 @@ class ProtoLifter:
         # closure, whose environment is the maker scope with every array bound
         it = S.Interp(self)
         self.making = True
-        r = it.call_lua(LuaFunc(vm.maker, Scope()), Multi(vm.maker_args(vmobj, proto, upvals)))
+        env0 = Scope()
+        if cap is not None and getattr(vm, "outer", None):
+            # Names the maker's own scope cannot resolve, because the maker is
+            # nested inside another function (a curried maker: the VM state and
+            # helpers live one or two levels out). The capture holds them by
+            # name; bind them at their real declaration keys so the walk sees
+            # the values the real run saw, then run the enclosing functions'
+            # own `local` statements for the rest (the proto arrays a curried
+            # maker computes there).
+            for key, nm in vm.outer.items():
+                v = cap.get(nm)
+                if nm in cap and (v is None or isinstance(
+                        v, (LTable, Builtin, OpaqueFn, Opaque, int, float, bytes, bool))):
+                    env0.vars[key] = v
+            for cfn in vm.info.get("chain") or ():
+                lstats = [st for st in (cfn.get("body", {}).get("body") or ())
+                          if st.get("type") == "AstStatLocal"]
+                if lstats:
+                    try:
+                        it.exec_block(lstats, env0)
+                    except Exception:   # noqa: BLE001 - best effort: a name the walk may not need
+                        pass
+        r = it.call_lua(LuaFunc(vm.maker, env0), Multi(vm.maker_args(vmobj, proto, upvals, cap)))
         self.making = False
         f = r.first() if isinstance(r, Multi) else r
         if not isinstance(f, LuaFunc) or f.node is not vm.vm:
@@ -1916,6 +1960,30 @@ class _AccessLog(dict):
         dict.__setitem__(self, k, v)
 
 
+def _disp_fetch_expr(w):
+    """The `ARR[PC]` expression of a dispatch loop's head. It is not always
+    the first value of the first statement: v15.1 can save the pc first
+    (`d[2349588]=s; local o=w[s]`), parenthesize the fetch or put plain
+    values beside it (`local t,op=v,ARR[PC]`)."""
+    body = w.get("body", {}).get("body") or ()
+    for st in body[:2]:
+        if st.get("type") not in ("AstStatLocal", "AstStatAssign"):
+            continue
+        for vl in st.get("values") or ():
+            v = _ungroup(vl)
+            if v.get("type") == "AstExprIndexExpr":
+                e, idx = _ungroup(v["expr"]), _ungroup(v["index"])
+                if e.get("type") == "AstExprLocal" and idx.get("type") == "AstExprLocal":
+                    return v
+    return _ungroup(body[0]["values"][0])
+
+
+def _ungroup(e):
+    while e.get("type") == "AstExprGroup":
+        e = e["expr"]
+    return e
+
+
 class Stepper:
     def __init__(self, vm, lifter):
         self.vm = vm
@@ -1924,24 +1992,32 @@ class Stepper:
         self.cs = cs
         # locate mode / pc variables from the dispatch loops
         self.loops = []   # (index in inner body, if-node, while-node)
+        # statements the first mode runs before its loop (v15.1 sets the
+        # operand array up inside the mode's `if`); they belong to the
+        # prologue, not to the loop
+        self.first_init = []
         for i, st in enumerate(vm.inner_body):
             if st["type"] == "AstStatIf":
                 tb = st["thenbody"]["body"]
-                if tb and tb[0]["type"] == "AstStatWhile" and vm.is_dispatch(tb[0]):
-                    self.loops.append((i, st, tb[0]))
+                for j, sub in enumerate(tb):
+                    if sub["type"] in ("AstStatWhile", "AstStatRepeat") and vm.is_dispatch(sub):
+                        if not self.loops and j > 0:
+                            self.first_init = tb[:j]
+                        self.loops.append((i, st, sub))
+                        break
         self.mode_decl = None
         if not self.loops:
             # small scripts: Luraph emits only the opcodes used, sometimes all
             # in one mode, and then the loop sits in the function without a
             # mode `if` (mode is always 0 then)
             for i, st in enumerate(vm.inner_body):
-                if st["type"] == "AstStatWhile" and vm.is_dispatch(st):
+                if st["type"] in ("AstStatWhile", "AstStatRepeat") and vm.is_dispatch(st):
                     self.loops.append((i, None, st))
                     break
         if not self.loops:
             raise Unsupported("no dispatch loops in the VM function")
         w = self.loops[0][2]
-        pcname = w["body"]["body"][0]["values"][0]["index"]["local"]
+        pcname = _disp_fetch_expr(w)["index"]["local"]
         self.pc_decl = pcname["location"]
         # mode test of each loop: `if MODE==K then`, or `if a then` with
         # `local a = MODE==K` earlier in the loop function (evaluated here
@@ -2036,6 +2112,8 @@ class Stepper:
         self.lf.cur_scope = inner
         self.lf.in_prologue = True
         it.exec_block(self.vm.inner_body[:self.first_inner], inner)
+        if self.first_init:
+            it.exec_block(self.first_init, inner)
         self.lf.in_prologue = False
         if state is not None:
             inner.lookup(self.pc_decl).vars[self.pc_decl] = state.pc
@@ -2654,13 +2732,16 @@ def analyze_source(path):
     disp = vmmap.find_dispatchers(root)
     ctor = find_ctor_funcs(root)
     vms = {}
-    for info in vmmap.maker_info(root):
+    for info in vmmap.maker_info(root, disp):
         # dispatch loops inside this VM closure
         ids = {id(n) for n in iter_nodes(info["vm"])}
         inside = [d["node"] for d in disp if id(d["node"]) in ids]
         tag = "%s@%d,%d" % ((key,) + tuple(info["at"]))
         vms[tag] = VMModel(info, inside, ctor)
         vms[tag].tag = tag
+        # declarations enclosing the VM closure: a curried maker keeps the
+        # proto's data out there (ProtoLifter binds them from the capture)
+        vms[tag].outer = vmmap.outer_decls(root, info["vm"])
     # LPH_JIT functions: makers in the VM object returning plain Lua
     for k, node in ctor.items():
         parts = jit_maker_parts(node)
@@ -2696,7 +2777,18 @@ class Program:
                 self.vms[tag] = vm
                 self.ctors[id(vm)] = ctor
                 vm.src_lines = lines
-        self.dump.vm_names = {vm.maker["args"][0]["name"] for vm in self.vms.values()}
+        self.dump.vm_names = {vm.maker["args"][0]["name"] for vm in self.vms.values()
+                              if isinstance(vm.maker, dict) and vm.maker["args"]} | {
+            vm.info["chain"][0]["args"][0]["name"] for vm in self.vms.values()
+            if vm.info.get("chain") and vm.info["chain"][0].get("args")}
+        # captures by their proto table, so a proto lifted without its dump
+        # entry at hand (a child closure, a request walk) still finds the
+        # values its own maker captured
+        self.dump.cap_by_self = {}
+        for cap in self.dump.protos.values():
+            sv = cap.get("self")
+            if isinstance(sv, LTable):
+                self.dump.cap_by_self[sv.tid] = cap
         # bind Lua function values of the VM object to their AST
         for cap in self.dump.protos.values():
             try:
@@ -2731,7 +2823,7 @@ class Program:
         if upvals is None:
             upvals = UpList()
         proto = vm.proto_of(cap)
-        lf = ProtoLifter(vm, self.dump, vm.vmobj_of(cap), proto, upvals, self.globals)
+        lf = ProtoLifter(vm, self.dump, vm.vmobj_of(cap), proto, upvals, self.globals, cap=cap)
         st = make_stepper(vm, lf)
         for _ in range(WALK_RESTARTS):
             s0, order, restart = self._walk(vm, lf, st, limit)
@@ -2875,7 +2967,7 @@ def show_op(prog, key, mode, pc, force_op=None):
     cap = prog.dump.protos[key]
     vm = prog.vm_of(cap)
     lf = ProtoLifter(vm, prog.dump, vm.vmobj_of(cap), vm.proto_of(cap),
-                     LTable(), prog.globals)
+                     LTable(), prog.globals, cap=cap)
     st = make_stepper(vm, lf)
     lines = prog.lines
     for i, ifn, w in st.loops:
@@ -2971,7 +3063,8 @@ class FunctionLifter:
     def lift(self, vm, vmobj, proto, upvals, upnames, depth=0):
         self.stats["functions"] += 1
         self.lifted.add(id(proto))
-        lf = ProtoLifter(vm, self.prog.dump, vmobj, proto, upvals, self.prog.globals)
+        lf = ProtoLifter(vm, self.prog.dump, vmobj, proto, upvals, self.prog.globals,
+                         cap=self.prog.dump.cap_by_self.get(proto.tid))
         st = make_stepper(vm, lf)
         for _ in range(WALK_RESTARTS):
             s0, order, restart = self.prog._walk(vm, lf, st, 400000)
@@ -3018,7 +3111,8 @@ class FunctionLifter:
             return memo[mkey]
         uses = memo[mkey] = {}
         try:
-            lf = ProtoLifter(cvm, self.prog.dump, vmobj, c.proto, UpList(idx), self.prog.globals)
+            lf = ProtoLifter(cvm, self.prog.dump, vmobj, c.proto, UpList(idx), self.prog.globals,
+                             cap=self.prog.dump.cap_by_self.get(c.proto.tid))
             lf.walk_only = True
             st = make_stepper(cvm, lf)
             for _ in range(WALK_RESTARTS):
@@ -3472,7 +3566,8 @@ def _walk_one(prog, vm, vmobj, proto, pkey):
     nmiss = sum(dump.misses.values())
     ent = {"requests": set(), "children": [], "errors": 0, "clean": False, "bw": {}, "tw": {}}
     try:
-        lf = ProtoLifter(vm, dump, vmobj, proto, UpList(), prog.globals)
+        lf = ProtoLifter(vm, dump, vmobj, proto, UpList(), prog.globals,
+                         cap=dump.cap_by_self.get(proto.tid))
         lf.walk_only = True
         st = make_stepper(vm, lf)
         for _ in range(WALK_RESTARTS):

@@ -9,7 +9,7 @@ HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 def analyze(path, target=None):
-    out = subprocess.run([os.path.join(HERE, "bin", "luau-ast.exe"), path], capture_output=True).stdout
+    out = subprocess.run([os.path.join(HERE, "bin", "luau-ast.exe" if os.name == "nt" else "luau-ast"), path], capture_output=True).stdout
     root = json.loads(out.decode("latin-1"))["root"]
     res = {"max": 0, "at": None, "target": None}
 

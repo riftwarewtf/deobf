@@ -33,6 +33,14 @@ With sources (ground truth for devirt readability).
 |---|---|---|
 | `001_vm_like_dispatch-obfuscated.lua` (`001_vm_like_dispatch.lua`, options unknown) | Only Luraph's probes: the script is pure math + `assert`. | Stack machine (program table, PUSH/ADD/SUB/MUL handlers, `assert(sp==1 and stack[1]==34)`, returns 34). 5 functions, fully lifted, same structure as the source; only names differ (`tbl`/`tbl2`/`n` for program/stack/sp). Dispatch goes through VM-object methods (`K:A(...)`) and handlers load script globals directly (`R[a] = assert`, what Hardcode Globals describes). devirt_check can't compare it (no traced effects); run the lifted file instead (prints 34). |
 
+Without sources (v15.1 shape reference, see **Luraph v15.1** below). Both run
+to completion and trace; neither reaches its payload yet.
+
+| Sample | Payload | State |
+|---|---|---|
+| `v15_1_print-obfuscated.lua` | `print("blah blah")` | Probe block only: ~63 statements, 2 runs (the second with the tamper proto skipped), 3 s with the Path2D cache. 34 bootstrap protos captured; the payload VM makes none. |
+| `v15_1_metatable-obfuscated.lua` | a `__index` metatable counter test | Same, plus a loadstring'd VM chunk (3 runs, 5 s). |
+
 ## Versions
 
 Luraph puts its own version in the first line of everything it makes:
@@ -349,6 +357,70 @@ removes Luraph's Path2D/Folder probe block at the top.
   <protos> --raw KEY` (the opcode the lifter executed per pc, tracebacks,
   overlay values). `--op KEY MODE:PC:OP` shows the handler of a decrypted opcode.
 
+## Luraph v15.1
+
+Everything above still holds; what v15.1 changed, all of it seen in every
+v15.1 sample (two VMs each, bootstrap + payload):
+
+- **Curried closure makers.** The VM closure is no longer stored anywhere:
+  three nested functions each return the next, `function(A,H,t,...)  -- 18
+  params, the proto's data
+  ... return function(K,K) ... return function(...) <dispatch loops> end end
+  end`, either anonymously or through named locals (`vmmap._curried3_of`,
+  `kind` "anon"/"named"). There is no proto parameter and no maker-assign
+  statement, so `maker_info` describes these through
+  `_dispatch_local_info` (`mode` = "dispatch_local") and the capture hook
+  collects the outermost function's parameters into one table per proto
+  (`driver._curried_capture`, the proto key `__pv`; `__PF`/`__PK` go on the
+  two `return`s, or around the returned function values when they are
+  anonymous). This is the one hook that declares a local - it runs once per
+  proto, not per VM step, so it does not change the interpreter frame whose
+  depth Luraph's stack probe measures.
+  - The lifter calls that maker with the enclosing function's locals
+    re-created in its scope (`ProtoLifter` `env0` from `vm.outer` =
+    `vmmap.outer_decls`, plus the chain's own `local` statements): the maker
+    body reads them, and they are not in the capture.
+- **Dispatch trees behind boolean locals.** Almost every level is `local b =
+  op <= 48; if b then`, and the head itself may save the pc first
+  (`d[2349588]=s; local o=w[s]`), parenthesize the fetch or put plain values
+  beside it. `vmmap.DISPATCH_HEAD` is the textual form all the source-patching
+  passes share (`driver.patch_spin`, envlog's chunk patch); `resolve` follows
+  the boolean locals, `devirt._disp_fetch_expr` finds the fetch.
+- A mode's `if` can run statements before its loop (`Stepper.first_init`):
+  they belong to the prologue, not to the loop. `repeat ... until false` is
+  used as a dispatch loop too.
+- **The tamper response writes through the narrow buffer writes**
+  (`buffer.writeu8`/`writeu16` with the full word as the value, which Luau
+  truncates silently) instead of `writeu32`. envlog's interceptor treats one
+  such out-of-range write into a bytecode-sized buffer as the tamper response
+  and kills that thread; without it the script scrambles its bytecode and
+  spins forever, and the trace holds nothing but the first probe block.
+- **Probe sequence** (much longer than v15's): library-function sweep with
+  `debug.info(f,"slnaf")` + `iscclosure`/`islclosure`, a first Path2D block
+  with no curve query, `task.wait/spawn/defer/delay`, a second complete Path2D
+  block, then `DescendantRemoving`/`DescendantAdded` on game, workspace, a
+  Folder, HttpService and RunService. `--strings` lists what it expects;
+  the four error-message constants at the end are deliberately broken chunks
+  it `loadstring`s and compares, which is why the chunk name has to reach
+  error messages verbatim (`E.loadstring` adds Luau's `=` marker: Roblox
+  prints `input.lua:56: ...`, not `[string "input.lua"]:56: ...`).
+- **Open: the payload never runs.** After that sequence the bootstrap decides
+  the environment is wrong and returns without starting the payload VM, so
+  only the ~34 bootstrap protos are captured and the result is the trace.
+  The run is clean otherwise (no spin, no timeout, Path2D answered offline),
+  and one trap gets attributed and skipped (#7) - that skip is a symptom, not
+  the cause. Next step: the divergence is in what the probe sequence reads
+  back, so compare each step's answers against real Roblox
+  (`research/fingerprint_random.luau` style probe scripts run through
+  `deob.py` and with `--studio`); the sweep's `debug.info(f,"sl")` of the
+  script's own functions (ours answers `Script, 3`) and the `Vector2`
+  the first Path2D block builds from three doubles are the two steps whose
+  answers are least certain. A stack-ceiling probe is in there as well (it
+  decrypts Luau's `"error in error handling"`): giving the harness's own
+  frames extra `CallInfo` headroom in a patched Luau changes which proto gets
+  blamed (#7 -> #8) but does not get the payload to run, so it is not worth
+  the patch.
+
 ## Checks (in addition to CLAUDE.md's)
 
 - `python research/regress.py OUTDIR` runs compile/scope/active_locals/
@@ -389,8 +461,11 @@ removes Luraph's Path2D/Folder probe block at the top.
 - **Luraph options:** confirmed: none, Intense VM Structure (same VM shape, more jump-hub flattening, same output). Hardcode Globals is handled; VM Compression
   (double-obfuscated) is out of scope. A script that fails the same way in
   real Studio without the harness is not an environment problem.
-- Other Luraph versions: detect() gives them 0.3 (below the 0.5 threshold,
-  so they get the generic trace); nothing has been tested.
+- Versions: the header comment identifies every one of them (`versions.py`),
+  but only v15.0 (001) has been seen lifted end to end. v15.1 traces and
+  captures its bootstrap protos; its payload is not reached yet (see
+  **Luraph v15.1**). Nothing between v14 and v15.0 has been tested.
 - Without the long-lived harness, constant rounds converge one nesting
   level per round. Loader VM roots can't be lifted (`storing a non-empty VM
-  table into a register`).
+  table into a register`); a lift that is only such error markers falls back
+  to the trace (`driver.run`).

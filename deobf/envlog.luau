@@ -2230,6 +2230,26 @@ E.buffer = (function()
 	-- is killed, leaving the bytecode intact for the rest of the script.
 	local lastOff = -1
 	local undo = {}
+	-- v15.1 scribbles through the narrow writes instead, with the full word as
+	-- the value: Luau truncates it silently (`v % 256`), so the write is
+	-- indistinguishable from a legitimate one by offset alone, but a decoder
+	-- that means to store a byte never passes a value the width cannot hold.
+	-- One such write into a bytecode-sized buffer is the tamper response.
+	for _, w in { { 1, "writei8", "writeu8" }, { 2, "writei16", "writeu16" } } do
+		local lo, hi = -2 ^ (8 * w[1] - 1), 2 ^ (8 * w[1])
+		for i = 2, 3 do
+			local orig = buffer[w[i]]
+			b[w[i]] = function(buf, off, v)
+				if R.type(v) == "number" and (v >= hi or v < lo) and buffer.len(buf) > 4096 then
+					tamperCount += 1
+					if not TRIGGER then noteTrigger() end
+					if (CFG.oplog or CFG.inline_probe) and E.__OPDUMP then E.__OPDUMP() end
+					R.error(TAMPER, 0)
+				end
+				return orig(buf, off, v)
+			end
+		end
+	end
 	for _, nm in { "writei32", "writeu32" } do
 		local orig = buffer[nm]
 		b[nm] = function(buf, off, v)
@@ -2395,12 +2415,29 @@ E.loadstring = function(src, chunkname)
 		end
 		-- spin watchdog (see E.__SPIN): a chunk the driver never saw (the run
 		-- that would report it hung) gets its dispatch heads patched here
+		-- (the same head forms as vmmap.DISPATCH_HEAD: the pc save in front and
+		-- the plain values before the fetch are v15.1's)
 		if CFG.spin and not (patched and R.find(patched, "__SPIN.n", 1, true)) then
-			patched = R.gsub(patched or src, "while true do [%w_, ]-=[%a_][%w_]*%[[%a_][%w_]*%];",
-				"%0__SPIN.n=__SPIN.n+1;if __SPIN.n>=__SPIN.step then __SPIN.f()end;")
+			local hook = "%0__SPIN.n=__SPIN.n+1;if __SPIN.n>=__SPIN.step then __SPIN.f()end;"
+			patched = patched or src
+			for _, head in { "while true do ", "repeat " } do
+				for _, pat in { head .. "[%w_, ]-=[%w_, ]-[%a_][%w_]*%[[%a_][%w_]*%];",
+					head .. "[%a_][%w_]*%[%d+%]=[%a_][%w_]*;[%w_, ]-=[%w_, ]-[%a_][%w_]*%[[%a_][%w_]*%];" } do
+					patched = R.gsub(patched, pat, hook)
+				end
+			end
 		end
 	end
-	local f, err = R.loadstring(patched or src, chunkname)
+	-- Roblox puts the chunk name into error messages verbatim
+	-- ("input.lua:56: attempt to ...", and ":15: ..." for an empty name), so
+	-- it loads with Luau's "=" marker; without it Luau wraps the name
+	-- ("[string \"input.lua\"]:56:"). Luraph v15.1 loads deliberately broken
+	-- chunks and compares the message, so the marker decides its key.
+	local name = chunkname
+	if R.type(name) == "string" and R.sub(name, 1, 1) ~= "=" and R.sub(name, 1, 1) ~= "@" then
+		name = "=" .. name
+	end
+	local f, err = R.loadstring(patched or src, name)
 	if not f then return nil, err end
 	R.setfenv(f, ENV)
 	comment("loadstring() of " .. #src .. " bytes: " .. quote(R.sub(src, 1, 200)))
